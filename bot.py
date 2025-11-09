@@ -5,7 +5,7 @@ import telebot
 from telebot import types
 import time
 import re
-import os  # ✅ For environment variables
+import os  # For environment variables
 
 # ✅ Secure Bot Token from Render/Environment
 BOT_TOKEN = os.getenv("8311230763:AAFcBn4qxzeKF9gA7mLqmtzppCf7v-iHxKU")
@@ -41,71 +41,101 @@ CLAIM_COOLDOWN  = 60 * 60  # 1 hour
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
-# ---------- ephemeral state ----------
-active_msg_id = {}
-pending = {}
-ref_counts  = {}
-invited_by  = {}
-last_claim  = {}
+# ---------- In-Memory Data ----------
+active_msg_id = {}      # chat_id -> message_id
+pending = {}            # for temp plan selection
+ref_counts = {}         # user_id -> count
+invited_by = {}         # user_id -> inviter_id
+last_claim = {}         # user_id -> time
 
-# ---------- helpers ----------
+# ---------- Helpers ----------
 
 def send_or_edit(chat_id, text, reply_markup=None):
     mid = active_msg_id.get(chat_id)
     if mid:
         try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=mid,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=mid, text=text, reply_markup=reply_markup)
             return
-        except Exception:
+        except:
             pass
     m = bot.send_message(chat_id, text, reply_markup=reply_markup)
     active_msg_id[chat_id] = m.message_id
 
+def clean_try_delete(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+
+# ---------- Keyboards ----------
+
 def kb_main():
     k = types.InlineKeyboardMarkup()
-    k.add(types.InlineKeyboardButton("📸 Instagram Followers", callback_data="cat:followers"))
-    k.add(types.InlineKeyboardButton("❤️ Instagram Likes",     callback_data="cat:likes"))
-    k.add(types.InlineKeyboardButton("▶️ Instagram Views",     callback_data="cat:views"))
-    k.add(types.InlineKeyboardButton("👥 Join Group",          url=GROUP_LINK))
-    k.add(types.InlineKeyboardButton("☎ Support",              callback_data="support"))
-    k.add(types.InlineKeyboardButton("🎯 Referral",            callback_data="ref:menu"))
+    k.add(types.InlineKeyboardButton("📸 Followers", callback_data="cat:followers"))
+    k.add(types.InlineKeyboardButton("❤️ Likes", callback_data="cat:likes"))
+    k.add(types.InlineKeyboardButton("▶️ Views", callback_data="cat:views"))
+    k.add(types.InlineKeyboardButton("🎯 Referral", callback_data="ref:menu"))
+    k.add(types.InlineKeyboardButton("☎ Support", callback_data="support"))
+    k.add(types.InlineKeyboardButton("👥 Join Group", url=GROUP_LINK))
     return k
 
 def kb_plans(cat):
     k = types.InlineKeyboardMarkup()
-    for idx, (name, line, _price) in enumerate(PRICES[cat]):
-        k.add(types.InlineKeyboardButton(f"{name}", callback_data=f"plan:{cat}:{idx}"))
-    k.add(types.InlineKeyboardButton("⬅ Back to menu", callback_data="back:main"))
+    for idx, (name, _, _) in enumerate(PRICES[cat]):
+        k.add(types.InlineKeyboardButton(name, callback_data=f"plan:{cat}:{idx}"))
+    k.add(types.InlineKeyboardButton("⬅ Back", callback_data="back:main"))
     return k
 
-def kb_after_plan(cat, idx):
-    return types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("🧾 Payment Format / Where to send", callback_data=f"format:{cat}:{idx}")
-    ).add(
-        types.InlineKeyboardButton("⬅ Back", callback_data=f"back:cat:{cat}")
-    )
+# ---------- Commands ----------
 
-def kb_ref_menu():
-    k = types.InlineKeyboardMarkup()
-    k.add(types.InlineKeyboardButton("👥 My referrals", callback_data="ref:count"))
-    k.add(types.InlineKeyboardButton("🔗 Copy referral link", callback_data="ref:link"))
-    k.add(types.InlineKeyboardButton("🎁 Claim free 2k views", callback_data="ref:claim"))
-    k.add(types.InlineKeyboardButton("🏆 Referral levels", callback_data="ref:levels"))
-    k.add(types.InlineKeyboardButton("⬅ Back to menu", callback_data="back:main"))
-    return k
+@bot.message_handler(commands=["start","restart"])
+def start_cmd(message):
+    clean_try_delete(message)
 
-def prettify_prices(cat, emoji, word):
-    lines = [f"🚀 TRIO HUB SMM - Official Price List 🚀\n\n{emoji} {word} PACKAGES\n"]
-    for _, line, _ in PRICES[cat]:
-        lines.append(line)
-    lines.append("\n✅ Why TRIO HUB SMM ?\nFast Delivery | Safe | 24/7 Support\n\nSelect a plan 👇")
-    return "\n".join(lines)
+    if "ref_" in message.text:
+        try:
+            ref_id = int(message.text.split("ref_")[1])
+            uid = message.from_user.id
+            if uid not in invited_by and ref_id != uid:
+                invited_by[uid] = ref_id
+                ref_counts[ref_id] = ref_counts.get(ref_id, 0) + 1
+        except:
+            pass
 
-def need_reel_note():
-    return "📎 *REEL LINK only* (no profile links)\n
+    send_or_edit(message.chat.id, "Welcome to TRIO HUB SMM 🚀\nSelect a service 👇", kb_main())
+
+@bot.message_handler(commands=["clear"])
+def clear_cmd(message):
+    clean_try_delete(message)
+    cid = message.chat.id
+    if active_msg_id.get(cid):
+        try:
+            bot.delete_message(cid, active_msg_id[cid])
+        except:
+            pass
+        active_msg_id.pop(cid, None)
+    send_or_edit(cid, "✅ Chat cleared!\n\nWelcome back 👇", kb_main())
+
+# ---------- Callback Handler ----------
+
+@bot.callback_query_handler(func=lambda c: True)
+def on_callback(cb):
+    data = cb.data
+    cid = cb.message.chat.id
+    uid = cb.from_user.id
+
+    if data.startswith("cat:"):
+        cat = data.split(":")[1]
+        text = f"📌 Available {cat.capitalize()} Plans:\n\n" + "\n".join(f"{p[1]}" for p in PRICES[cat])
+        send_or_edit(cid, text, kb_plans(cat))
+
+    elif data == "back:main":
+        send_or_edit(cid, "Welcome to TRIO HUB SMM 🚀\nSelect a service 👇", kb_main())
+
+    elif data == "support":
+        send_or_edit(cid, "☎ Support: @yourusername\nOr join group below.", 
+                     types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅ Back", callback_data="back:main")))
+
+# ---------- Run Bot ----------
+print("🤖 Bot is running…")
+bot.infinity_polling(skip_pending=True)
