@@ -1,1 +1,1 @@
-# trioseller_bot
+# trioseller-bot
